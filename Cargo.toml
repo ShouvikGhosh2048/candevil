@@ -1,0 +1,9 @@
+[package]
+name = "candevil"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+physics_reinforcement_learning_environment = { git = "https://github.com/ShouvikGhosh2048/physics_reinforcement_learning_environment.git", tag = "0.3" }
