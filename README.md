@@ -1,4 +1,4 @@
-# candevil
+# miasmodeus
 Visualization of reinforcement learning algorithms
 
-Named after [Candevil](https://wiki.cassettebeasts.com/wiki/Candevil).
+Named after [Miasmodeus](https://wiki.cassettebeasts.com/wiki/Miasmodeus).
