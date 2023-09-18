@@ -8,9 +8,9 @@ use physics_reinforcement_learning_environment::{
     WorldObject,
 };
 
+// The world will be divided into EGUI_CELL_SIZE by EGUI_CELL_SIZE cells
+// and then each cell is shown by egui.
 const EGUI_CELL_SIZE: f32 = 10.0;
-const TRAINING_POSITION_CELL_MULTIPLIER: f32 = 0.2;
-const TRAINING_VELOCITY_CELL_MULTIPLIER: f32 = 2.0;
 
 #[derive(Clone)]
 struct ListOfMovesAgent {
@@ -102,7 +102,8 @@ struct BruteForceSearchTrainingDetails {
     receiver: Receiver<BruteForceSearchNode>,
     world: World,
     selected_cell: Option<(i32, i32)>,
-    total_grid_drag: egui::Vec2,
+    egui_player_offset_from_center: egui::Vec2,
+    zoom: f32,
     current_agent: Option<ListOfMovesAgent>,
 }
 
@@ -202,10 +203,10 @@ impl TrainingDetails<ListOfMovesAgent, BruteForceSearchNode> for BruteForceSearc
 
                     let mouse_offset = response.interact_pointer_pos().unwrap()
                         - rect.center()
-                        - self.total_grid_drag;
+                        - self.egui_player_offset_from_center;
                     let selected_cell = (
-                        (mouse_offset.x / 10.0).floor() as i32,
-                        -(mouse_offset.y / 10.0).ceil() as i32,
+                        (mouse_offset.x / (10.0 * self.zoom)).floor() as i32,
+                        -(mouse_offset.y / (10.0 * self.zoom)).ceil() as i32,
                     );
 
                     if self.node_grid.contains_key(&selected_cell) {
@@ -214,10 +215,24 @@ impl TrainingDetails<ListOfMovesAgent, BruteForceSearchNode> for BruteForceSearc
                         self.selected_cell = None;
                     }
                 } else if response.dragged() {
-                    self.total_grid_drag += response.drag_delta();
+                    self.egui_player_offset_from_center += response.drag_delta();
+                } else if response.hovered() {
+                    if let Some(mouse_position) = response.hover_pos() {
+                        let mouse_offset = mouse_position - rect.center();
+                        let zoom_delta = ui.input(|i| i.zoom_delta());
+                        if !(0.99..=1.01).contains(&zoom_delta) {
+                            let prev_zoom = self.zoom;
+                            self.zoom *= zoom_delta;
+                            self.egui_player_offset_from_center = mouse_offset
+                                - self.zoom / prev_zoom
+                                    * (mouse_offset - self.egui_player_offset_from_center);
+                        }
+                    }
                 }
 
-                let player_position = egui::vec2(
+                // Player position in world.
+                // We flip the y coordinate as Bevy and egui have different +y-axis directions.
+                let world_player_position = egui::vec2(
                     self.world.player_position[0],
                     -self.world.player_position[1],
                 );
@@ -263,16 +278,18 @@ impl TrainingDetails<ListOfMovesAgent, BruteForceSearchNode> for BruteForceSearc
                                 );
 
                             // Calculate displacement from player center.
-                            *point -= player_position;
+                            *point -= world_player_position;
 
-                            // Scale by 100.0 since we show 0.1 by 0.1 boxes as 10px by 10px.
-                            *point *= 10.0 / EGUI_CELL_SIZE;
+                            *point *= self.zoom;
                         }
 
                         let points = points
                             .iter()
                             .map(|point| {
-                                (rect.center().to_vec2() + self.total_grid_drag + *point).to_pos2()
+                                (rect.center().to_vec2()
+                                    + self.egui_player_offset_from_center
+                                    + *point)
+                                    .to_pos2()
                             })
                             .collect();
 
@@ -299,9 +316,12 @@ impl TrainingDetails<ListOfMovesAgent, BruteForceSearchNode> for BruteForceSearc
 
                     for (cell, indices) in self.node_grid.iter() {
                         let min = rect.center()
-                            + self.total_grid_drag
-                            + egui::vec2((cell.0 as f32) * 10.0, -(cell.1 as f32 + 1.0) * 10.0);
-                        let max = min + egui::vec2(10.0, 10.0);
+                            + self.egui_player_offset_from_center
+                            + egui::vec2(
+                                (cell.0 as f32) * 10.0 * self.zoom,
+                                -(cell.1 as f32 + 1.0) * 10.0 * self.zoom,
+                            );
+                        let max = min + egui::vec2(10.0 * self.zoom, 10.0 * self.zoom);
                         let fraction = indices.len() as f32 / max_indices_count as f32;
                         let color = (125.0 + 75.0 * (1.0 - fraction)) as u8;
 
@@ -315,12 +335,12 @@ impl TrainingDetails<ListOfMovesAgent, BruteForceSearchNode> for BruteForceSearc
 
                     if let Some(selected_cell) = self.selected_cell {
                         let min = rect.center()
-                            + self.total_grid_drag
+                            + self.egui_player_offset_from_center
                             + egui::vec2(
-                                (selected_cell.0 as f32) * 10.0,
-                                -(selected_cell.1 as f32 + 1.0) * 10.0,
+                                (selected_cell.0 as f32) * 10.0 * self.zoom,
+                                -(selected_cell.1 as f32 + 1.0) * 10.0 * self.zoom,
                             );
-                        let max = min + egui::vec2(10.0, 10.0);
+                        let max = min + egui::vec2(10.0 * self.zoom, 10.0 * self.zoom);
 
                         ui.painter().with_clip_rect(rect).rect(
                             egui::Rect { min, max },
@@ -340,16 +360,18 @@ impl TrainingDetails<ListOfMovesAgent, BruteForceSearchNode> for BruteForceSearc
 #[derive(PartialEq, Clone, Copy)]
 enum Binning {
     None,
-    Position,
     PositionAndVelocity,
+    Position,
+    PositionThenVelocity,
 }
 
 impl Display for Binning {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Binning::None => write!(f, "None"),
-            Binning::Position => write!(f, "Position"),
             Binning::PositionAndVelocity => write!(f, "Position & velocity"),
+            Binning::Position => write!(f, "Position"),
+            Binning::PositionThenVelocity => write!(f, "Position then velocity"),
         }
     }
 }
@@ -358,6 +380,8 @@ impl Display for Binning {
 struct BruteForceSearch {
     move_repeat_count: usize,
     binning: Binning,
+    position_cell_multiplier: f32,
+    velocity_cell_multiplier: f32,
     check_world_bounds: bool,
 }
 
@@ -366,10 +390,18 @@ impl Default for BruteForceSearch {
         BruteForceSearch {
             move_repeat_count: 50,
             binning: Binning::PositionAndVelocity,
+            position_cell_multiplier: 0.2,
+            velocity_cell_multiplier: 1.0,
             check_world_bounds: true,
         }
     }
 }
+
+#[derive(PartialEq, Eq, Hash)]
+struct PositionCell(i32, i32);
+
+#[derive(PartialEq, Eq, Hash)]
+struct VelocityCell(i32, i32);
 
 impl Algorithm<ListOfMovesAgent, BruteForceSearchNode, BruteForceSearchTrainingDetails>
     for BruteForceSearch
@@ -386,7 +418,8 @@ impl Algorithm<ListOfMovesAgent, BruteForceSearchNode, BruteForceSearchTrainingD
             receiver,
             world: world.clone(),
             selected_cell: None,
-            total_grid_drag: egui::vec2(0.0, 0.0),
+            egui_player_offset_from_center: egui::vec2(0.0, 0.0),
+            zoom: 1.0,
             current_agent: None,
         }
     }
@@ -406,13 +439,32 @@ impl Algorithm<ListOfMovesAgent, BruteForceSearchNode, BruteForceSearchTrainingD
                     .selected_text(format!("{}", &self.binning))
                     .show_ui(ui, |ui| {
                         ui.selectable_value(&mut self.binning, Binning::None, "None");
-                        ui.selectable_value(&mut self.binning, Binning::Position, "Position");
                         ui.selectable_value(
                             &mut self.binning,
                             Binning::PositionAndVelocity,
                             "Position & Velocity",
                         );
+                        ui.selectable_value(&mut self.binning, Binning::Position, "Position");
+                        ui.selectable_value(
+                            &mut self.binning,
+                            Binning::PositionThenVelocity,
+                            "Position then Velocity",
+                        );
                     });
+                ui.end_row();
+
+                ui.label("Position cell multiplier:");
+                ui.add(
+                    egui::DragValue::new(&mut self.position_cell_multiplier)
+                        .clamp_range(0.001..=100.0),
+                );
+                ui.end_row();
+
+                ui.label("Velocity cell multiplier:");
+                ui.add(
+                    egui::DragValue::new(&mut self.velocity_cell_multiplier)
+                        .clamp_range(0.001..=100.0),
+                );
                 ui.end_row();
 
                 ui.label("Check world bounds:");
@@ -449,9 +501,11 @@ impl Algorithm<ListOfMovesAgent, BruteForceSearchNode, BruteForceSearchTrainingD
         }
 
         let mut nodes = vec![];
-        let mut new_position_nodes = VecDeque::new();
-        let mut new_velocity_nodes = VecDeque::new();
-        let mut visited_states: HashMap<(i32, i32), HashSet<(i32, i32)>> = HashMap::new();
+
+        let mut queue1 = VecDeque::new();
+        let mut queue2 = VecDeque::new();
+
+        let mut visited_states: HashMap<PositionCell, HashSet<VelocityCell>> = HashMap::new();
 
         let mut visited_root_children = false;
 
@@ -460,9 +514,9 @@ impl Algorithm<ListOfMovesAgent, BruteForceSearchNode, BruteForceSearchTrainingD
                 // First iteration of the loop visits the children of the root.
                 visited_root_children = true;
                 None
-            } else if let Some(index) = new_position_nodes.pop_front() {
+            } else if let Some(index) = queue1.pop_front() {
                 Some(index)
-            } else if let Some(index) = new_velocity_nodes.pop_front() {
+            } else if let Some(index) = queue2.pop_front() {
                 Some(index)
             } else {
                 break;
@@ -511,23 +565,23 @@ impl Algorithm<ListOfMovesAgent, BruteForceSearchNode, BruteForceSearchTrainingD
                             let player_velocity =
                                 (player.linvel().x / 0.00625, player.linvel().y / 0.00625);
 
-                            let position_cell = (
+                            let position_cell = PositionCell(
                                 (player_displacement.0
-                                    / (TRAINING_POSITION_CELL_MULTIPLIER
+                                    / (self.position_cell_multiplier
                                         * self.move_repeat_count as f32))
                                     .floor() as i32,
                                 (player_displacement.1
-                                    / (TRAINING_POSITION_CELL_MULTIPLIER
+                                    / (self.position_cell_multiplier
                                         * self.move_repeat_count as f32))
                                     .floor() as i32,
                             );
-                            let velocity_cell = (
+                            let velocity_cell = VelocityCell(
                                 (player_velocity.0
-                                    / (TRAINING_VELOCITY_CELL_MULTIPLIER
+                                    / (self.velocity_cell_multiplier
                                         * self.move_repeat_count as f32))
                                     .floor() as i32,
                                 (player_velocity.1
-                                    / (TRAINING_VELOCITY_CELL_MULTIPLIER
+                                    / (self.velocity_cell_multiplier
                                         * self.move_repeat_count as f32))
                                     .floor() as i32,
                             );
@@ -545,7 +599,25 @@ impl Algorithm<ListOfMovesAgent, BruteForceSearchNode, BruteForceSearchTrainingD
                                 match &self.binning {
                                     Binning::None => {
                                         // We will always explore the children of the new node.
-                                        new_position_nodes.push_back(nodes.len());
+                                        queue1.push_back(nodes.len());
+                                    }
+                                    Binning::PositionAndVelocity => {
+                                        // We will explore the children of the new node
+                                        // if it's position or velocity lie in a different bin.
+                                        if let Some(velocities) =
+                                            visited_states.get_mut(&position_cell)
+                                        {
+                                            if !velocities.contains(&velocity_cell) {
+                                                velocities.insert(velocity_cell);
+                                                queue1.push_back(nodes.len());
+                                            }
+                                        } else {
+                                            let mut velocities = HashSet::new();
+                                            velocities.insert(velocity_cell);
+                                            visited_states.insert(position_cell, velocities);
+
+                                            queue1.push_back(nodes.len());
+                                        }
                                     }
                                     Binning::Position => {
                                         // We will explore the children of the new node
@@ -555,25 +627,26 @@ impl Algorithm<ListOfMovesAgent, BruteForceSearchNode, BruteForceSearchTrainingD
                                             velocities.insert(velocity_cell);
                                             visited_states.insert(position_cell, velocities);
 
-                                            new_position_nodes.push_back(nodes.len());
+                                            queue1.push_back(nodes.len());
                                         }
                                     }
-                                    Binning::PositionAndVelocity => {
+                                    Binning::PositionThenVelocity => {
                                         // We will explore the children of the new node
                                         // if it's position or velocity lies in a different bin.
+                                        // However, nodes in a new position bin have a higher priority.
                                         if let Some(velocities) =
                                             visited_states.get_mut(&position_cell)
                                         {
                                             if !velocities.contains(&velocity_cell) {
                                                 velocities.insert(velocity_cell);
-                                                new_velocity_nodes.push_back(nodes.len());
+                                                queue2.push_back(nodes.len());
                                             }
                                         } else {
                                             let mut velocities = HashSet::new();
                                             velocities.insert(velocity_cell);
                                             visited_states.insert(position_cell, velocities);
 
-                                            new_position_nodes.push_back(nodes.len());
+                                            queue1.push_back(nodes.len());
                                         }
                                     }
                                 }
