@@ -1168,6 +1168,7 @@ name = "candevil"
 version = "0.1.0"
 dependencies = [
  "physics_reinforcement_learning_environment",
+ "rand",
 ]
 
 [[package]]
